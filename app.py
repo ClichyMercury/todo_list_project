@@ -1,5 +1,6 @@
 from flask import Flask, jsonify, request
 from flask_restx import Api, Resource, fields
+from flask_restx import marshal
 from models import db, Todo
 
 # Initialisation de l'application Flask
@@ -31,19 +32,34 @@ class TaskList(Resource):
         tasks = Todo.query.all()
         return jsonify([task.to_dict() for task in tasks])
 
-    @api.expect(task_model)  # Spécifie le modèle attendu pour la requête POST
+    @api.expect(task_model)
     @api.response(201, 'Tâche ajoutée avec succès')
     @api.response(400, 'Données invalides')
     def post(self):
         """Ajouter une nouvelle tâche"""
         data = request.get_json()
-        new_task = Todo(title=data['title'], done=False)
-        db.session.add(new_task)
-        db.session.commit()
-        return jsonify(new_task.to_dict()), 201
+
+        if 'title' not in data or not isinstance(data['title'], str):
+            return {"message": "Données invalides : 'title' est requis et doit être une chaîne."}, 400
+
+        try:
+            new_task = Todo(title=data['title'], done=False)
+            db.session.add(new_task)
+            db.session.commit()
+
+            # Utiliser marshal pour sérialiser les données
+            return {
+                'message': 'Tâche ajoutée avec succès',
+                'task': marshal(new_task, task_model)
+            }, 201
+
+        except Exception as e:
+            db.session.rollback()
+            return {"message": f"Erreur serveur : {str(e)}"}, 500
 
 # Route pour récupérer, modifier ou supprimer une tâche par ID
 @ns.route('/<int:id>')
+@api.response(201, 'Tâche modifiée avec succès')
 @api.response(404, 'Tâche non trouvée')
 class Task(Resource):
     @api.doc('get_task')
@@ -65,12 +81,30 @@ class Task(Resource):
         return jsonify(task.to_dict())
 
     @api.response(200, 'Tâche supprimée avec succès')
+    @api.response(404, 'Tâche non trouvée')
     def delete(self, id):
         """Supprimer une tâche"""
-        task = Todo.query.get_or_404(id)
-        db.session.delete(task)
-        db.session.commit()
-        return jsonify({'message': 'Task deleted'}), 200
+        try:
+            # Récupérer la tâche à supprimer
+            task = Todo.query.get_or_404(id)
+            
+            # Supprimer la tâche de la base de données
+            db.session.delete(task)
+            db.session.commit()
+
+            # Utiliser marshal pour sérialiser les données de la tâche supprimée
+            return {
+                'message': 'Tâche supprimée avec succès',
+                'task': marshal(task, task_model)
+            }, 200
+
+        except Exception as e:
+            # En cas d'erreur, annuler la transaction
+            db.session.rollback()
+            import traceback
+            error_message = str(e) + "\n" + traceback.format_exc()
+            return {"message": f"Erreur serveur : {error_message}"}, 500
+
 
 if __name__ == '__main__':
     app.run(debug=True)
